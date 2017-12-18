@@ -1,0 +1,90 @@
+function list = listdesign(model,vl,vu,growth,mingrowth,prodind,epsProd)
+% function list = listdesign(model,vl,vu,growth,mingrowth,prodind)
+% List the active constraints in order of importance to production rate
+%--------------------------------------------------------------------------
+%Inputs
+%model - Stoichiometric FBA-compliant Model of organism 
+%vl - Modified Lower flux bounds obtained from Stage 1 of EMILiO 
+%vu - 
+%growth
+%mingrowth
+%prodind
+%epsProd - Minimum difference in production flux between strain designs for
+%          them to be classified as different
+% Laurence Yang Dec. 10, 2009
+activeTol = 1e-4;
+if nargin<7
+    epsProd = 1e-3;
+end
+
+[Sm,Sn]=size(model.S);
+b=sparse(Sm,1,0);
+
+vl(growth)=mingrowth;
+%vu(growth)=mingrowth;
+
+%c = sparse(1,prodind,-1,1,Sn);  % Minimize production rate
+c = sparse([1 1],[growth prodind],[1 -epsProd],1,Sn); 
+
+vld=vl; vud=vu;     % Store designed bounds for re-confirmation phase
+
+list{1}.activevu=[]; list{1}.activevl=[]; list{1}.vprod=[]; list{1}.growth=[];
+nactive = 1; vprod = 100;
+k=0;
+while nactive > 0 && vprod>0
+    k=k+1;
+
+    [v,fval,exitflag,output,lambda] = cplexlp(-c',[],[],model.S,b,vl,vu);
+    vprod = v(prodind);
+    
+    wvu = lambda.upper;
+    wvl = lambda.lower;
+    
+    activevu = wvu > activeTol;
+    activevl = wvl > activeTol;
+    
+    % Only include active constraints that are due to strain design
+    activevud = (abs(vu-model.vu)>1e-4) .* activevu;
+    activevld = (abs(vl-model.vl)>1e-4) .* activevl;
+    activevud=logical(activevud);
+    activevld=logical(activevld);
+        
+    vu(activevud)=model.vu(activevud); % Now, remove these active constraints
+    vl(activevld)=model.vl(activevld); 
+    
+    nactive = sum(activevud)+sum(activevld);
+    if nactive>0
+        list{k}.activevu = find(activevud);
+        list{k}.activevl = find(activevld);        
+    end
+end
+
+% Now, confirm the design strategy by sequentially adding constraint sets
+% But wait. It seems some "active" sets were useless...
+% We can check this by implementing active sets one set at a time, but not
+% cumulatively adding them.
+% But wait. The different sets might not be exclusive...
+% Actually, checked and found intersects are empty for all set pairs
+nsets = length(list);
+
+% First, show wild-type growth and production rate
+v = cplexlp(-c(:),[],[],model.S,b,model.vl,model.vu);
+vprod=v(prodind);
+vgrowth=v(growth);
+list{nsets+1}.Strain = 'Wild-type';
+list{nsets+1}.vprod=vprod;
+list{nsets+1}.growth=vgrowth;
+list{nsets+1}.activevl=[];
+list{nsets+1}.activevu=[];
+    
+for i=1:nsets
+    vl=model.vl; vu=model.vu;   % NOT adding sets cumulatively
+    set = nsets+1-i;
+    vl(list{set}.activevl) = vld(list{set}.activevl);
+    vu(list{set}.activevu) = vud(list{set}.activevu);
+    v = cplexlp(-c(:),[],[],model.S,b,vl,vu);
+    vprod=v(prodind);
+    vgrowth=v(growth);
+    list{set}.vprod=vprod;
+    list{set}.growth=vgrowth;
+end

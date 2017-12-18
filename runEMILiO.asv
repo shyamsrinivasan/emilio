@@ -1,0 +1,105 @@
+%%runEMILiO
+%growthmin - Minimum required growth coupled to metabolite production
+%Solve maximization problem for target metabolite production constrained by
+%minimum growth
+cprod = sparse(1,prodind,1,1,Sn);
+vl1=model.vl; vu1=model.vu;
+vl1(growth)=growthmin;
+b=sparse(Sm,1,0);
+v=cplexlp(-cprod(:),[],[],model.S,b,vl1,vu1);
+vpmax = v(prodind);
+
+%%
+EMtimes = sparse(1,EMmaxIter);
+allsets=cell(1,EMmaxIter);
+allplists=cell(1,EMmaxIter);
+nsets=0;
+nplists=0;
+failediter=0;
+
+% Run EMILiO
+for EMiter= 1 : EMmaxIter
+    startEM = tic;
+    [setsY,plist,vlY,vuY,activevlY,activevuY,vY,KKTviol,exitflag]=EMILiO(...
+        model,growth,growthmin,prodind,blacklistEM,R,pvind,noConc, ...
+        KpY,ICEM,LPpruneFrac,MILPpruneFrac,epsProd,epsProdILP,nCuts);
+    elapsed=toc(startEM);
+    EMtimes(EMiter)=elapsed;
+    % If exitflag == 2, means we should increase epsProdILP
+    if exitflag == 2
+        epsProdILP = 10 * epsProdILP;
+        fprintf('Restarting with higher epsProd=%g, as suggested.\n',epsProdILP);
+    elseif exitflag == -1                        
+        fprintf('Terminating EMILiO\n');    % Because SLP suggests no solution
+        break;
+    end
+    
+    if not(isempty(setsY))
+        nsubsets=length(setsY);
+        for i=1:nsubsets
+            if setsY{i}.vprod >= LPpruneFrac*vpmax
+                nsets=nsets+1;
+                allsets{nsets}=setsY{i};
+                % Rank mods in terms of importance to production
+                modsranked=rankmods(model,setsY{i},growth,prodind,growthmin,epsProd);
+                % Just blacklist most important mod
+                newblacklist=modsranked(1).rxn;
+                fprintf('Reaction %s removed at iteration %g\n',...
+                    model.rxns{newblacklist},EMiter);
+                blacklistEM= union(blacklistEM, newblacklist);
+            end
+        end
+        % Number of plists can be different from nsets due to integer cuts
+        numplists = length(plist);
+        for i=1:numplists
+            nplists=nplists+1;
+            allplists{nplists}=plist{i};
+        end
+    end
+    if failediter > maxFailedIter
+        fprintf('Failed to find strain more than %g times. Terminating\n',maxFailedIter);
+        break;
+    end
+end
+allsets(nsets+1:end)=[];
+allplists(nplists+1:end)=[];
+
+%% For each of the strains, remove strategies that make little difference
+insigTol = 0.001;
+allsets2=cell(1,nsets);
+for i=1:nsets
+    allsets2{i}.KO=[]; allsets2{i}.activevl=[]; allsets2{i}.activevu=[];
+    allsets2{i}.vld=[]; allsets2{i}.vud=[];
+    allsets2{i}.vl=model.vl; allsets2{i}.vu=model.vu;
+end
+b=sparse(Sm,1,0);
+c=sparse(1,growth,1,1,Sn);
+for i=1:nsets
+    [modsranked,dvps]=rankmods(model,allsets{i},growth,prodind,growthmin,epsProd);
+    sigmods = find(abs(dvps) >= insigTol*vpmax);
+    nsig = length(sigmods);
+    for j=sigmods(:)'
+        allsets2{i}.KO = [allsets2{i}.KO modsranked(j).KO];
+        if not(isempty(modsranked(j).activevl))
+            allsets2{i}.activevl=[allsets2{i}.activevl modsranked(j).activevl];
+            allsets2{i}.vld=[allsets2{i}.vld modsranked(j).vl];
+            allsets2{i}.vl(modsranked(j).activevl)=modsranked(j).vl;
+        end
+        if not(isempty(modsranked(j).activevu))
+            allsets2{i}.activevu=[allsets2{i}.activevu modsranked(j).activevu];
+            allsets2{i}.vud=[allsets2{i}.vud modsranked(j).vu];
+            allsets2{i}.vu(modsranked(j).activevu)=modsranked(j).vu;
+        end
+    end
+    vl2=model.vl; vu2=model.vu;
+    vl2(allsets2{i}.KO)=0; vu2(allsets2{i}.KO)=0;
+    vl2(allsets2{i}.activevl)=allsets2{i}.vld;
+    vu2(allsets2{i}.activevu)=allsets2{i}.vud;
+    [v,fval]=cplexlp(-c(:),[],[],model.S,b,vl2,vu2);
+    allsets2{i}.vprod = abs(v(prodind));
+end
+
+
+%% Now, correct for any numerical error leading to false fine-tuning to low
+% flux, when it should actually be a knockout
+allsets2 = knockoutnumerr(model,allsets2,growth,prodind,growthmin,epsProd);

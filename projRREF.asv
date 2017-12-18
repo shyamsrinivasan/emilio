@@ -1,0 +1,29 @@
+function [TX,rX,pvind,freeind] = projRREF(R,pvind)
+% function [TX,rX,pvind,freeind] = projRREF(R,pvind)
+%-------------------------------------------------------------------------- 
+%Inputs
+% R - Reduced row echelon form of [A|b] in Ax = b
+% pvind - Column indices of S that are linearly independent
+%-------------------------------------------------------------------------- 
+%Outputs
+% TX  - Sparse matrix with elements corresponding to rows and columns not
+%       in the basis
+% rX - b vector in constraint Ax = b
+% pvind - Column indices of S that are linearly independent
+% freeind - Column indices of S not in pvind
+%%%%%%%%%%%%%%%%%
+% Xfull = rX-TX*X
+%%%%%%%%%%%%%%%%%
+N=size(R,2)-1;  % Because augmented [A b]
+freeind = setdiff(1:N,pvind); %columns in [A b] without the column 
+                              %corresponding to b that are not 
+                              %in the basis as determined by pvind
+npv = length(pvind); nfree = N-npv;
+
+Rpv = R(1:npv,freeind);%Submatrix of R that is not in basis (pvind)
+dpv = R(1:npv,end);    %Last column of R = [A b] and b is a column of zeros
+rX = sparse(N,1,0);
+rX(pvind)=dpv;
+TX = sparse(N,nfree,0);
+TX(freeind,1:nfree)=-eye(nfree);
+TX(pvind,:)=Rpv; 
