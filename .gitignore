@@ -1,0 +1,8 @@
+# ignore aux (from tex)
+*.aux
+# log files (from tex)
+*.log
+# syntec files (from tex)
+*.gz
+# asv binary files from matlab
+*.asv
